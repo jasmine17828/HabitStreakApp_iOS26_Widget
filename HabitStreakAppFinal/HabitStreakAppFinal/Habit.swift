@@ -1,7 +1,7 @@
 import Foundation
 import SwiftData
 
-enum HabitGoalType: Codable {
+enum HabitGoalType: String, Codable, Sendable {
     case count
     case date
 }

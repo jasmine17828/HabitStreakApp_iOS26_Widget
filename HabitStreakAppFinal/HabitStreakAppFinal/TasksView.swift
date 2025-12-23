@@ -235,33 +235,7 @@ struct TasksView: View {
                 AddHabitView()
             }
             .sheet(item: $editingHabit) { habit in
-                NavigationStack {
-                    Form {
-                        TextField("名稱", text: Binding(get: { habit.title }, set: { habit.title = $0 }))
-                        
-                        Section("目標設定") {
-                            Picker("目標類型", selection: Binding(get: { editingHabit?.goalType ?? .date }, set: { newValue in editingHabit?.goalType = newValue })) {
-                                Text("次數").tag(HabitGoalType.count)
-                                Text("日期").tag(HabitGoalType.date)
-                            }
-                            .pickerStyle(.segmented)
-
-                            if editingHabit?.goalType == .count {
-                                Stepper(value: Binding(get: { editingHabit?.targetCount ?? 10 }, set: { editingHabit?.targetCount = $0 }), in: 1...1000) {
-                                    Text("目標完成次數：\(editingHabit?.targetCount ?? 10)")
-                                }
-                            } else {
-                                DatePicker("目標時間", selection: Binding(get: { editingHabit?.dueDate ?? Date() }, set: { editingHabit?.dueDate = $0 }), displayedComponents: [.date, .hourAndMinute])
-                            }
-                        }
-                    }
-                    .navigationTitle("編輯任務")
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("完成") { try? modelContext.save() }
-                        }
-                    }
-                }
+                EditHabitSheet(habit: habit, onDismiss: { editingHabit = nil }, modelContext: modelContext)
             }
             .alert("確定要刪除此任務嗎？", isPresented: $showingDeleteAlert) {
                 Button("刪除", role: .destructive) {
@@ -307,6 +281,50 @@ struct TasksView: View {
             let total = due.timeIntervalSince(start)
             let elapsed = now.timeIntervalSince(start)
             return max(0, min(elapsed / total, 1.0))
+        }
+    }
+}
+
+private struct EditHabitSheet: View {
+    @Bindable var habit: Habit
+    var onDismiss: () -> Void
+    var modelContext: ModelContext
+    @Environment(\.dismiss) private var dismiss
+    @State private var showSaveAlert = false
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("名稱", text: Binding(get: { habit.title }, set: { habit.title = $0 }))
+                Section("目標設定") {
+                    Picker("目標類型", selection: Binding(get: { habit.goalType }, set: { habit.goalType = $0 })) {
+                        Text("次數").tag(HabitGoalType.count)
+                        Text("日期").tag(HabitGoalType.date)
+                    }
+                    .pickerStyle(.segmented)
+                    if habit.goalType == .count {
+                        Stepper(value: Binding(get: { habit.targetCount ?? 10 }, set: { habit.targetCount = $0 }), in: 1...1000) {
+                            Text("目標完成次數：\(habit.targetCount ?? 10)")
+                        }
+                    } else {
+                        DatePicker("目標時間", selection: Binding(get: { habit.dueDate ?? Date() }, set: { habit.dueDate = $0 }), displayedComponents: [.date, .hourAndMinute])
+                    }
+                }
+            }
+            .navigationTitle("編輯任務")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") {
+                        try? modelContext.save()
+                        showSaveAlert = true
+                    }
+                }
+            }
+        }
+        .alert("已儲存編輯", isPresented: $showSaveAlert) {
+            Button("確定") {
+                onDismiss()
+                dismiss()
+            }
         }
     }
 }

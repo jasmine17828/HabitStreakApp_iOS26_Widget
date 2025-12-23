@@ -1,3 +1,4 @@
+// HomeView.swift
 
 
 import SwiftUI
@@ -240,6 +241,13 @@ enum ChartPeriod: String, CaseIterable, Identifiable {
     }
 }
 
+struct EarnedBadge: Identifiable {
+    let id = UUID()
+    let title: String
+    let subtitle: String
+    let symbol: String
+}
+
 struct HomeView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Habit.createdAt, order: .reverse) private var habits: [Habit]
@@ -254,18 +262,11 @@ struct HomeView: View {
     @State private var bgPulse = false
     @State private var confettiBursts: [UUID] = []
     
-    @State private var earnedBadge: Badge? = nil
+    @State private var earnedBadge: EarnedBadge? = nil
     @State private var showBadgeCard = false
     
     @State private var lastPunchedHabitID: PersistentIdentifier? = nil
     
-    private struct Badge: Identifiable {
-        let id = UUID()
-        let title: String
-        let subtitle: String
-        let symbol: String
-    }
-
     private func praise(for habit: Habit) -> String {
         let s = habit.streak
         switch s {
@@ -277,16 +278,16 @@ struct HomeView: View {
         default: return "太強了！已連續 \(s) 天！🏆"
         }
     }
-    
-    private func checkMilestones(for habit: Habit) -> Badge? {
+
+    private func checkMilestones(for habit: Habit) -> EarnedBadge? {
         // Streak milestones
         let streakMilestones: [Int: (String, String, String)] = [
             7: ("一週達成！", "連續 7 天，太棒了！", "flame.fill"),
             14: ("雙週堅持！", "連續 14 天，繼續保持！", "flame.fill"),
             30: ("月度達成！", "連續 30 天，超強！", "trophy.fill"),
-            100: ("百日傳奇！", "連續 100 天，傳說級！", "crown.fill")
+            100: ("百日傳奇！", "連續 100 天，傳說級！", "crown")
         ]
-        if let info = streakMilestones[habit.streak] { return Badge(title: info.0, subtitle: info.1, symbol: info.2) }
+        if let info = streakMilestones[habit.streak] { return EarnedBadge(title: info.0, subtitle: info.1, symbol: info.2) }
         
         // Completion milestones
         let countMilestones: [Int: (String, String, String)] = [
@@ -294,7 +295,7 @@ struct HomeView: View {
             50: ("50 次完成！", "半百堅持，值得喝采！", "medal.fill"),
             100: ("100 次完成！", "百次不易，超級堅持！", "trophy.fill")
         ]
-        if let info = countMilestones[habit.completionCount] { return Badge(title: info.0, subtitle: info.1, symbol: info.2) }
+        if let info = countMilestones[habit.completionCount] { return EarnedBadge(title: info.0, subtitle: info.1, symbol: info.2) }
         
         return nil
     }
@@ -335,238 +336,40 @@ struct HomeView: View {
         let from = Calendar.current.date(byAdding: .day, value: -period.days + 1, to: .now)!
         return habit.checkIns.filter { $0 >= from }
     }
+    
+    // Inserted helpers as per instructions:
+    private func chartSeries(for habits: [Habit], activeIDs: Set<PersistentIdentifier>, from: Date, calendar: Calendar) -> [(habit: Habit, items: [(day: Date, count: Int)])] {
+        habits
+            .filter { activeIDs.contains($0.persistentModelID) }
+            .map { h in
+                let dates = h.checkIns.filter { $0 >= from }
+                let grouped = Dictionary(grouping: dates.map { calendar.startOfDay(for: $0) }) { $0 }
+                    .mapValues { $0.count }
+                let items = grouped.keys.sorted().map { (day: $0, count: grouped[$0] ?? 0) }
+                return (habit: h, items: items)
+            }
+    }
+    
+    private func daysLeft(until due: Date, from now: Date = Date()) -> Int {
+        let cal = Calendar.current
+        let startOfNow = cal.startOfDay(for: now)
+        let startOfDue = cal.startOfDay(for: due)
+        return cal.dateComponents([.day], from: startOfNow, to: startOfDue).day ?? 0
+    }
+    
+    private func remainingHoursAndMinutes(until due: Date, from now: Date = Date()) -> (hours: Int, minutes: Int) {
+        let totalSecs: Int = max(0, Int(due.timeIntervalSince(now)))
+        let hours: Int = totalSecs / 3600
+        let minutes: Int = (totalSecs % 3600) / 60
+        return (hours, minutes)
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    // Quick punch-in section
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "hand.tap.fill").foregroundStyle(.blue)
-                            Text("快速打卡")
-                        }
-                        .font(.headline)
-                        
-                        let selectedHabit = habits.first(where: { $0.persistentModelID == (quickPunchSelectedID ?? habits.first?.persistentModelID) })
-                        let isCount = (selectedHabit?.goalType == .count)
-
-                        HStack(alignment: .center, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("任務：")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Picker("任務", selection: Binding(get: {
-                                    quickPunchSelectedID ?? habits.first?.persistentModelID
-                                }, set: { newValue in
-                                    quickPunchSelectedID = newValue
-                                })) {
-                                    ForEach(habits) { h in
-                                        Text(h.title).tag(Optional(h.persistentModelID))
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                            }
-                            
-                            if let h = selectedHabit {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    // Line 1: 今日累積（適用所有目標型態）
-                                    HStack(spacing: 8) {
-                                        Label("今日累積", systemImage: "sun.max.fill")
-                                            .labelStyle(.iconOnly)
-                                            .foregroundStyle(.yellow)
-                                        let today = Calendar.current.startOfDay(for: Date())
-                                        let countToday = h.checkIns.filter { Calendar.current.startOfDay(for: $0) == today }.count
-                                        Text("今日累積 \(countToday) 次")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-
-                                    // Line 2: 距離目標（僅日期型顯示）
-                                    if h.goalType == .date, let due = h.dueDate {
-                                        let now = Date()
-                                        let cal = Calendar.current
-                                        let startOfNow = cal.startOfDay(for: now)
-                                        let startOfDue = cal.startOfDay(for: due)
-                                        let daysLeft = cal.dateComponents([.day], from: startOfNow, to: startOfDue).day ?? 0
-                                        HStack(spacing: 8) {
-                                            Image(systemName: "calendar.badge.clock").foregroundStyle(.orange)
-                                            if daysLeft > 0 {
-                                                Text("距離目標還有 \(daysLeft) 天")
-                                                    .font(.caption)
-                                                    .foregroundStyle(.secondary)
-                                            } else {
-                                                let totalSecs = max(0, Int(due.timeIntervalSince(now)))
-                                                let hours = totalSecs / 3600
-                                                let minutes = (totalSecs % 3600) / 60
-                                                Text(hours == 0 && minutes == 0 ? "今天截止！" : "剩餘 \(hours) 小時 \(minutes) 分鐘")
-                                                    .font(.caption)
-                                                    .foregroundStyle(hours == 0 && minutes == 0 ? .red : .secondary)
-                                            }
-                                        }
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-
-                            Button {
-                                if let h = selectedHabit,
-                                   h.goalType == .count,
-                                   let target = h.targetCount,
-                                   h.completionCount >= target {
-
-                                    let generator = UINotificationFeedbackGenerator()
-                                    generator.notificationOccurred(.warning)
-
-                                    withAnimation {
-                                        showPunchSuccess = true
-                                    }
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                                        withAnimation {
-                                            showPunchSuccess = false
-                                        }
-                                    }
-                                    return
-                                }
-                                // Button bounce animation
-                                withAnimation(.spring(response: 0.25, dampingFraction: 0.5)) { punchButtonScale = 0.9 }
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                                    withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { punchButtonScale = 1.0 }
-                                }
-
-                                // Perform punch-in
-                                if let id = quickPunchSelectedID ?? habits.first?.persistentModelID,
-                                   let habit = habits.first(where: { $0.persistentModelID == id }) {
-                                    habit.recordCompletion()
-                                    try? modelContext.save()
-
-                                    // Haptic
-                                    let generator = UINotificationFeedbackGenerator()
-                                    generator.notificationOccurred(.success)
-
-                                    // Background pulse
-                                    withAnimation(.easeInOut(duration: 0.3)) { bgPulse = true }
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                                        withAnimation(.easeInOut(duration: 0.4)) { bgPulse = false }
-                                    }
-
-                                    // Success banner and confetti
-                                    withAnimation { showPunchSuccess = true }
-                                    confettiBursts.append(UUID())
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { withAnimation { showPunchSuccess = false } }
-                                    
-                                    if let badge = checkMilestones(for: habit) {
-                                        earnedBadge = badge
-                                        withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) { showBadgeCard = true }
-                                        // stronger confetti burst
-                                        confettiBursts.append(UUID())
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                                            withAnimation(.easeInOut(duration: 0.3)) { showBadgeCard = false }
-                                            earnedBadge = nil
-                                        }
-                                    }
-                                    
-                                    lastPunchedHabitID = habit.persistentModelID
-                                }
-                            } label: {
-                                let selectedHabit = habits.first(where: { $0.persistentModelID == (quickPunchSelectedID ?? habits.first?.persistentModelID) })
-                                let selectedTitle = selectedHabit?.title
-                                let isCount = (selectedHabit?.goalType == .count)
-                                let gradient = LinearGradient(colors: isCount ? [.blue, .green] : [.orange, .red], startPoint: .leading, endPoint: .trailing)
-
-                                HStack(spacing: 8) {
-                                    Image(systemName: "bolt.fill")
-                                        .symbolRenderingMode(.palette)
-                                        .foregroundStyle(.white, isCount ? .green : .yellow)
-                                        .imageScale(.medium)
-                                        .rotationEffect(showPunchSuccess ? .degrees(15) : .degrees(0))
-                                        .animation(.easeInOut(duration: 0.2), value: showPunchSuccess)
-                                    Text("CHECK!")
-                                        .fontWeight(.semibold)
-                                        .foregroundStyle(.white)
-                                }
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 12)
-                                .background(
-                                    gradient,
-                                    in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                )
-                            }
-                            //.buttonStyle(.borderedProminent) // Removed as per instruction
-                            .disabled({
-                                guard let h = selectedHabit else { return habits.isEmpty }
-                                if h.goalType == .count, let target = h.targetCount {
-                                    return h.completionCount >= target
-                                }
-                                return habits.isEmpty
-                            }())
-                            .opacity({
-                                guard let h = selectedHabit else { return 1 }
-                                if h.goalType == .count, let target = h.targetCount {
-                                    return h.completionCount >= target ? 0.6 : 1
-                                }
-                                return 1
-                            }())
-                            .scaleEffect(punchButtonScale)
-                            .shadow(color: Color.accentColor.opacity(0.35), radius: 8, x: 0, y: 4)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .stroke(LinearGradient(colors: [.white.opacity(0.7), .clear], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1)
-                            )
-                            .sensoryFeedback(.success, trigger: showPunchSuccess)
-                            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: punchButtonScale)
-                            .overlay(alignment: .center) {
-                                if showPunchSuccess {
-                                    Circle()
-                                        .stroke(Color.accentColor.opacity(0.4), lineWidth: 8)
-                                        .frame(width: 60, height: 60)
-                                        .scaleEffect(1.4)
-                                        .opacity(0)
-                                        .transition(.scale.combined(with: .opacity))
-                                        .animation(.easeOut(duration: 0.6), value: showPunchSuccess)
-                                }
-                            }
-                        }
-                        
-                        // Persistent undo row below the punch button
-                        if let id = lastPunchedHabitID, let h = habits.first(where: { $0.persistentModelID == id }) {
-                            HStack(spacing: 8) {
-                                Image(systemName: "arrow.uturn.left.circle.fill")
-                                    .foregroundStyle(.secondary)
-                                Text("已為『\(h.title)』打卡")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                Button("撤銷") {
-                                    if let idx = h.checkIns.lastIndex(where: { _ in true }) {
-                                        h.checkIns.remove(at: idx)
-                                        try? modelContext.save()
-                                    }
-                                    lastPunchedHabitID = nil
-                                }
-                                .buttonStyle(.bordered)
-                                .font(.caption)
-                            }
-                            .padding(.top, 8)
-                        }
-                    }
-                    .padding()
-                    .background(
-                        ZStack {
-                            (
-                                (habits.first(where: { $0.persistentModelID == (quickPunchSelectedID ?? habits.first?.persistentModelID) })?.goalType == .count)
-                                ? Color.blue.opacity(0.12)
-                                : Color.orange.opacity(0.12)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .fill(.ultraThinMaterial)
-                            )
-                        }
-                    )
-                    .shadow(color: Color.black.opacity(0.08), radius: 12, x: 0, y: 6)
-
+                    QuickPunchCard(habits: habits, modelContext: modelContext, quickPunchSelectedID: $quickPunchSelectedID, showPunchSuccess: $showPunchSuccess, punchButtonScale: $punchButtonScale, bgPulse: $bgPulse, confettiBursts: $confettiBursts, earnedBadge: $earnedBadge, showBadgeCard: $showBadgeCard, lastPunchedHabitID: $lastPunchedHabitID)
+                    
                     // 1) Progress bars per habit
                     VStack(alignment: .leading, spacing: 12) {
                         Text("各任務完成狀況")
@@ -594,24 +397,18 @@ struct HomeView: View {
                                         .foregroundStyle(.secondary)
                                 }
                                 if habit.goalType == .date, let due = habit.dueDate {
-                                    let now = Date()
-                                    let cal = Calendar.current
-                                    let startOfNow = cal.startOfDay(for: now)
-                                    let startOfDue = cal.startOfDay(for: due)
-                                    let daysLeft = cal.dateComponents([.day], from: startOfNow, to: startOfDue).day ?? 0
+                                    let dLeft = daysLeft(until: due)
+                                    let remain: (hours: Int, minutes: Int) = remainingHoursAndMinutes(until: due)
                                     HStack(spacing: 8) {
                                         Image(systemName: "calendar.badge.clock").foregroundStyle(.orange)
-                                        if daysLeft > 0 {
-                                            Text("距離目標還有 \(daysLeft) 天")
+                                        if dLeft > 0 {
+                                            Text("距離目標還有 \(dLeft) 天")
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
                                         } else {
-                                            let totalSecs = max(0, Int(due.timeIntervalSince(now)))
-                                            let hours = totalSecs / 3600
-                                            let minutes = (totalSecs % 3600) / 60
-                                            Text(hours == 0 && minutes == 0 ? "今天截止！" : "剩餘 \(hours) 小時 \(minutes) 分鐘")
+                                            Text((remain.hours == 0 && remain.minutes == 0) ? "今天截止！" : "剩餘 \(remain.hours) 小時 \(remain.minutes) 分鐘")
                                                 .font(.caption)
-                                                .foregroundStyle(hours == 0 && minutes == 0 ? .red : .secondary)
+                                                .foregroundStyle((remain.hours == 0 && remain.minutes == 0) ? .red : .secondary)
                                         }
                                     }
                                 }
@@ -625,121 +422,20 @@ struct HomeView: View {
 
                     // 2) Selectable time-series chart
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("完成趨勢")
-                            .font(.headline)
-                        HStack {
-                            Picker("週期", selection: $selectedPeriod) {
-                                ForEach(ChartPeriod.allCases) { p in Text(p.rawValue).tag(p) }
-                            }
-                            .pickerStyle(.segmented)
-                        }
-
-                        // Multi-select habits: simple tokens/grid of toggles
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack {
-                                ForEach(habits) { h in
-                                    let isSelected = selectedHabitIDs.contains(h.persistentModelID)
-                                    Button {
-                                        if isSelected {
-                                            selectedHabitIDs.remove(h.persistentModelID)
-                                        } else {
-                                            selectedHabitIDs.insert(h.persistentModelID)
-                                        }
-                                    } label: {
-                                        Text(h.title)
-                                            .padding(.horizontal, 10).padding(.vertical, 6)
-                                            .background(isSelected ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.1))
-                                            .clipShape(Capsule())
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
-
-                        if habits.isEmpty {
-                            Text("請先新增任務").foregroundStyle(.secondary)
-                        } else {
-                            let activeIDs = selectedHabitIDs.isEmpty ? Set(habits.map { $0.persistentModelID }) : selectedHabitIDs
-                            let cal = Calendar.current
-                            let from = cal.date(byAdding: .day, value: -selectedPeriod.days + 1, to: .now)!
-
-                            // Build series data for each selected habit
-                            let series: [(habit: Habit, items: [(day: Date, count: Int)])] = habits
-                                .filter { activeIDs.contains($0.persistentModelID) }
-                                .map { h in
-                                    let dates = h.checkIns.filter { $0 >= from }
-                                    let grouped = Dictionary(grouping: dates.map { cal.startOfDay(for: $0) }) { $0 }
-                                        .mapValues { $0.count }
-                                    let items = grouped.keys.sorted().map { (day: $0, count: grouped[$0] ?? 0) }
-                                    return (habit: h, items: items)
-                                }
-
-                            Chart {
-                                ForEach(series, id: \.habit.persistentModelID) { s in
-                                    ForEach(s.items, id: \.day) { point in
-                                        LineMark(
-                                            x: .value("日期", point.day, unit: .day),
-                                            y: .value("次數", point.count),
-                                            series: .value("任務", s.habit.title)
-                                        )
-                                        PointMark(
-                                            x: .value("日期", point.day, unit: .day),
-                                            y: .value("次數", point.count)
-                                        )
-                                        .foregroundStyle(by: .value("任務", s.habit.title))
-                                    }
-                                }
-                            }
-                            .frame(height: 240)
-                        }
+                        TrendSection(habits: habits, selectedPeriod: $selectedPeriod, selectedHabitIDs: $selectedHabitIDs)
                     }
                 }
                 .padding()
                 .overlay(alignment: .top) {
-                    if showPunchSuccess, let id = quickPunchSelectedID ?? habits.first?.persistentModelID, let habit = habits.first(where: { $0.persistentModelID == id }) {
-                        let message: String = {
-                            switch habit.goalType {
-                            case .count:
-                                if let target = habit.targetCount, habit.completionCount >= target {
-                                    return "已完成目標 🎉 繼續人生新目標！"
-                                } else {
-                                    return "已完成 \(habit.completionCount) 次！"
-                                }
-                            case .date:
-                                return "又完成一天！🎉"
-                            }
-                        }()
-                        Label(message, systemImage: habit.goalType == .count ? "checkmark.circle.fill" : "sun.max.fill")
-                            .padding(10)
-                            .background(.ultraThinMaterial, in: Capsule())
-                            .shadow(radius: 4)
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                            .padding(.top, 8)
-                    }
+                    PunchSuccessBanner(show: showPunchSuccess,
+                                       selectedID: quickPunchSelectedID ?? habits.first?.persistentModelID,
+                                       habits: habits)
                 }
                 .overlay {
-                    ZStack {
-                        ForEach(confettiBursts, id: \.self) { burstID in
-                            ConfettiBurstView(key: burstID)
-                        }
-                    }
+                    ConfettiOverlay(confettiBursts: confettiBursts)
                 }
                 .overlay {
-                    if showBadgeCard, let badge = earnedBadge {
-                        VStack(spacing: 8) {
-                            Image(systemName: badge.symbol)
-                                .font(.system(size: 44))
-                                .foregroundStyle(.yellow)
-                            Text(badge.title).font(.headline)
-                            Text(badge.subtitle)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(16)
-                        .background(.ultraThickMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .shadow(radius: 12)
-                        .transition(.scale.combined(with: .opacity))
-                    }
+                    BadgeOverlay(show: showBadgeCard, earnedBadge: earnedBadge)
                 }
                 .background(bgPulse ? Color.green.opacity(0.08) : Color.clear)
             }
@@ -769,6 +465,444 @@ struct HomeView: View {
                         Image(systemName: "bell.badge")
                     }
                 }
+            }
+        }
+    }
+}
+
+private struct QuickPunchCard: View {
+    let habits: [Habit]
+    let modelContext: ModelContext
+    @Binding var quickPunchSelectedID: PersistentIdentifier?
+    @Binding var showPunchSuccess: Bool
+    @Binding var punchButtonScale: CGFloat
+    @Binding var bgPulse: Bool
+    @Binding var confettiBursts: [UUID]
+    @Binding var earnedBadge: EarnedBadge?
+    @Binding var showBadgeCard: Bool
+    @Binding var lastPunchedHabitID: PersistentIdentifier?
+    
+    private func checkMilestones(for habit: Habit) -> EarnedBadge? {
+        // Streak milestones
+        let streakMilestones: [Int: (String, String, String)] = [
+            7: ("一週達成！", "連續 7 天，太棒了！", "flame.fill"),
+            14: ("雙週堅持！", "連續 14 天，繼續保持！", "flame.fill"),
+            30: ("月度達成！", "連續 30 天，超強！", "trophy.fill"),
+            100: ("百日傳奇！", "連續 100 天，傳說級！", "crown")
+        ]
+        if let info = streakMilestones[habit.streak] { return EarnedBadge(title: info.0, subtitle: info.1, symbol: info.2) }
+
+        // Completion milestones
+        let countMilestones: [Int: (String, String, String)] = [
+            10: ("10 次完成！", "起步有力，繼續前進！", "star.fill"),
+            50: ("50 次完成！", "半百堅持，值得喝采！", "medal.fill"),
+            100: ("100 次完成！", "百次不易，超級堅持！", "trophy.fill")
+        ]
+        if let info = countMilestones[habit.completionCount] { return EarnedBadge(title: info.0, subtitle: info.1, symbol: info.2) }
+
+        return nil
+    }
+
+    private func daysLeft(until due: Date, from now: Date = Date()) -> Int {
+        let cal = Calendar.current
+        let startOfNow = cal.startOfDay(for: now)
+        let startOfDue = cal.startOfDay(for: due)
+        return cal.dateComponents([.day], from: startOfNow, to: startOfDue).day ?? 0
+    }
+
+    private func remainingHoursAndMinutes(until due: Date, from now: Date = Date()) -> (hours: Int, minutes: Int) {
+        let totalSecs: Int = max(0, Int(due.timeIntervalSince(now)))
+        let hours: Int = totalSecs / 3600
+        let minutes: Int = (totalSecs % 3600) / 60
+        return (hours, minutes)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "hand.tap.fill").foregroundStyle(.blue)
+                Text("快速打卡")
+            }
+            .font(.headline)
+            
+            let defaultID: PersistentIdentifier? = habits.first?.persistentModelID
+            let chosenID: PersistentIdentifier? = quickPunchSelectedID ?? defaultID
+            let selectedHabit: Habit? = habits.first(where: { $0.persistentModelID == chosenID })
+            let isCount: Bool = (selectedHabit?.goalType == .count)
+            let selectionBinding = Binding<PersistentIdentifier?>(get: { chosenID }, set: { newValue in
+                quickPunchSelectedID = newValue
+            })
+
+            // Changed from HStack to VStack to comply with requirement for vertical layout on long names
+            VStack(spacing: 12) {
+                VStack(alignment: .center, spacing: 4) {
+                    Text("任務：")
+                        .font(.headline).bold()
+                        .multilineTextAlignment(.center)
+                    Picker("任務", selection: selectionBinding) {
+                        ForEach(habits) { h in
+                            Text(h.title)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .tag(Optional(h.persistentModelID))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+                Divider()
+                if let h = selectedHabit {
+                    let today = Calendar.current.startOfDay(for: Date())
+                    let countToday = h.checkIns.filter { Calendar.current.startOfDay(for: $0) == today }.count
+                    VStack(alignment: .center, spacing: 8) {
+                        // Line 1: 今日累積（適用所有目標型態）
+                        HStack(spacing: 8) {
+                            Label("今日累積", systemImage: "sun.max.fill")
+                                .labelStyle(.iconOnly)
+                                .foregroundStyle(.yellow)
+                            Text("今日累積 \(countToday) 次")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .multilineTextAlignment(.center)
+                        }
+
+                        // Line 2: 距離目標（僅日期型顯示）
+                        if h.goalType == .date, let due = h.dueDate {
+                            let dLeft = daysLeft(until: due)
+                            let remain: (hours: Int, minutes: Int) = remainingHoursAndMinutes(until: due)
+                            HStack(spacing: 8) {
+                                Image(systemName: "calendar.badge.clock").foregroundStyle(.orange)
+                                if dLeft > 0 {
+                                    Text("距離目標還有 \(dLeft) 天")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                        .multilineTextAlignment(.center)
+                                } else {
+                                    Text((remain.hours == 0 && remain.minutes == 0) ? "今天截止！" : "剩餘 \(remain.hours) 小時 \(remain.minutes) 分鐘")
+                                        .font(.caption)
+                                        .foregroundStyle((remain.hours == 0 && remain.minutes == 0) ? .red : .secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                        .multilineTextAlignment(.center)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                }
+
+                Button {
+                    if let h = selectedHabit,
+                       h.goalType == .count,
+                       let target = h.targetCount,
+                       h.completionCount >= target {
+
+                        let generator = UINotificationFeedbackGenerator()
+                        generator.notificationOccurred(.warning)
+
+                        withAnimation {
+                            showPunchSuccess = true
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                            withAnimation {
+                                showPunchSuccess = false
+                            }
+                        }
+                        return
+                    }
+                    // Button bounce animation
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.5)) { punchButtonScale = 0.9 }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { punchButtonScale = 1.0 }
+                    }
+
+                    // Perform punch-in
+                    if let id = quickPunchSelectedID ?? habits.first?.persistentModelID,
+                       let habit = habits.first(where: { $0.persistentModelID == id }) {
+                        habit.recordCompletion()
+                        try? modelContext.save()
+
+                        // Haptic
+                        let generator = UINotificationFeedbackGenerator()
+                        generator.notificationOccurred(.success)
+
+                        // Background pulse
+                        withAnimation(.easeInOut(duration: 0.3)) { bgPulse = true }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            withAnimation(.easeInOut(duration: 0.4)) { bgPulse = false }
+                        }
+
+                        // Success banner and confetti
+                        withAnimation { showPunchSuccess = true }
+                        confettiBursts.append(UUID())
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { withAnimation { showPunchSuccess = false } }
+                        
+                        if let badge = checkMilestones(for: habit) {
+                            earnedBadge = badge
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) { showBadgeCard = true }
+                            // stronger confetti burst
+                            confettiBursts.append(UUID())
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                withAnimation(.easeInOut(duration: 0.3)) { showBadgeCard = false }
+                                earnedBadge = nil
+                            }
+                        }
+                        
+                        lastPunchedHabitID = habit.persistentModelID
+                    }
+                } label: {
+                    let gradient = LinearGradient(colors: isCount ? [.blue, .green] : [.orange, .red], startPoint: .leading, endPoint: .trailing)
+
+                    HStack(spacing: 8) {
+                        Image(systemName: "bolt.fill")
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, isCount ? .green : .yellow)
+                            .imageScale(.medium)
+                            .rotationEffect(showPunchSuccess ? .degrees(15) : .degrees(0))
+                            .animation(.easeInOut(duration: 0.2), value: showPunchSuccess)
+                            .layoutPriority(1)
+                        Text("CHECK!")
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .layoutPriority(2)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .frame(minWidth: 120, maxWidth: 240)
+                    .background(
+                        gradient,
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    )
+                }
+                //.buttonStyle(.borderedProminent) // Removed as per instruction
+                .disabled({
+                    guard let h = selectedHabit else { return habits.isEmpty }
+                    if h.goalType == .count, let target = h.targetCount {
+                        return h.completionCount >= target
+                    }
+                    return habits.isEmpty
+                }())
+                .opacity({
+                    guard let h = selectedHabit else { return 1 }
+                    if h.goalType == .count, let target = h.targetCount {
+                        return h.completionCount >= target ? 0.6 : 1
+                    }
+                    return 1
+                }())
+                .scaleEffect(punchButtonScale)
+                .shadow(color: Color.accentColor.opacity(0.35), radius: 8, x: 0, y: 4)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(LinearGradient(colors: [.white.opacity(0.7), .clear], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1)
+                )
+                .sensoryFeedback(.success, trigger: showPunchSuccess)
+                .animation(.spring(response: 0.25, dampingFraction: 0.6), value: punchButtonScale)
+                .overlay(alignment: .center) {
+                    if showPunchSuccess {
+                        Circle()
+                            .stroke(Color.accentColor.opacity(0.4), lineWidth: 8)
+                            .frame(width: 60, height: 60)
+                            .scaleEffect(1.4)
+                            .opacity(0)
+                            .transition(.scale.combined(with: .opacity))
+                            .animation(.easeOut(duration: 0.6), value: showPunchSuccess)
+                    }
+                }
+            }
+            
+            // Persistent undo row below the punch button
+            if let id = lastPunchedHabitID, let h = habits.first(where: { $0.persistentModelID == id }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.uturn.left.circle.fill")
+                        .foregroundStyle(.secondary)
+                    Text("已為『\(h.title)』打卡")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("撤銷") {
+                        if let idx = h.checkIns.lastIndex(where: { _ in true }) {
+                            h.checkIns.remove(at: idx)
+                            try? modelContext.save()
+                        }
+                        lastPunchedHabitID = nil
+                    }
+                    .buttonStyle(.bordered)
+                    .font(.caption)
+                }
+                .padding(.top, 8)
+            }
+        }
+        .padding()
+        .background(
+            ZStack {
+                (
+                    (habits.first(where: { $0.persistentModelID == (quickPunchSelectedID ?? habits.first?.persistentModelID) })?.goalType == .count)
+                    ? Color.blue.opacity(0.12)
+                    : Color.orange.opacity(0.12)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                )
+            }
+        )
+        .shadow(color: Color.black.opacity(0.08), radius: 12, x: 0, y: 6)
+    }
+}
+
+private struct TrendSection: View {
+    let habits: [Habit]
+    @Binding var selectedPeriod: ChartPeriod
+    @Binding var selectedHabitIDs: Set<PersistentIdentifier>
+
+    private func chartSeries(for habits: [Habit], activeIDs: Set<PersistentIdentifier>, from: Date, calendar: Calendar) -> [(habit: Habit, items: [(day: Date, count: Int)])] {
+        habits
+            .filter { activeIDs.contains($0.persistentModelID) }
+            .map { h in
+                let dates = h.checkIns.filter { $0 >= from }
+                let grouped = Dictionary(grouping: dates.map { calendar.startOfDay(for: $0) }) { $0 }
+                    .mapValues { $0.count }
+                let items = grouped.keys.sorted().map { (day: $0, count: grouped[$0] ?? 0) }
+                return (habit: h, items: items)
+            }
+    }
+
+    var body: some View {
+        Text("完成趨勢")
+            .font(.headline)
+        HStack {
+            Picker("週期", selection: $selectedPeriod) {
+                ForEach(ChartPeriod.allCases) { p in Text(p.rawValue).tag(p) }
+            }
+            .pickerStyle(.segmented)
+        }
+
+        // Multi-select habits: simple tokens/grid of toggles
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack {
+                ForEach(habits) { h in
+                    let isSelected = selectedHabitIDs.contains(h.persistentModelID)
+                    Button {
+                        if isSelected {
+                            selectedHabitIDs.remove(h.persistentModelID)
+                        } else {
+                            selectedHabitIDs.insert(h.persistentModelID)
+                        }
+                    } label: {
+                        Text(h.title)
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(isSelected ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.1))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+
+        if habits.isEmpty {
+            Text("請先新增任務").foregroundStyle(.secondary)
+        } else {
+            let activeIDs: Set<PersistentIdentifier> = {
+                if selectedHabitIDs.isEmpty {
+                    return Set(habits.map { $0.persistentModelID })
+                } else {
+                    return selectedHabitIDs
+                }
+            }()
+            let cal: Calendar = Calendar.current
+            let fromDate: Date = cal.date(byAdding: .day, value: -selectedPeriod.days + 1, to: .now)!
+            let series: [(habit: Habit, items: [(day: Date, count: Int)])] = chartSeries(for: habits, activeIDs: activeIDs, from: fromDate, calendar: cal)
+
+            Chart {
+                ForEach(series, id: \.habit.persistentModelID) { s in
+                    ForEach(s.items, id: \.day) { point in
+                        LineMark(
+                            x: .value("日期", point.day, unit: .day),
+                            y: .value("次數", point.count),
+                            series: .value("任務", s.habit.title)
+                        )
+                        PointMark(
+                            x: .value("日期", point.day, unit: .day),
+                            y: .value("次數", point.count)
+                        )
+                        .foregroundStyle(by: .value("任務", s.habit.title))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct PunchSuccessBanner: View {
+    let show: Bool
+    let selectedID: PersistentIdentifier?
+    let habits: [Habit]
+    var body: some View {
+        Group {
+            if show,
+               let id = selectedID ?? habits.first?.persistentModelID,
+               let habit = habits.first(where: { $0.persistentModelID == id }) {
+                let message: String = {
+                    switch habit.goalType {
+                    case .count:
+                        if let target = habit.targetCount, habit.completionCount >= target {
+                            return "已完成目標 🎉 繼續人生新目標！"
+                        } else {
+                            return "已完成 \(habit.completionCount) 次！"
+                        }
+                    case .date:
+                        return "又完成一天！🎉"
+                    }
+                }()
+                Label(message, systemImage: habit.goalType == .count ? "checkmark.circle.fill" : "sun.max.fill")
+                    .padding(10)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .shadow(radius: 4)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .padding(.top, 8)
+            }
+        }
+    }
+}
+
+private struct ConfettiOverlay: View {
+    let confettiBursts: [UUID]
+    var body: some View {
+        ZStack {
+            ForEach(confettiBursts, id: \.self) { burstID in
+                ConfettiBurstView(key: burstID)
+            }
+        }
+    }
+}
+
+private struct BadgeOverlay: View {
+    let show: Bool
+    let earnedBadge: EarnedBadge?
+    var body: some View {
+        Group {
+            if show, let badge = earnedBadge {
+                VStack(spacing: 8) {
+                    Image(systemName: badge.symbol)
+                        .font(.system(size: 44))
+                        .foregroundStyle(.yellow)
+                    Text(badge.title).font(.headline)
+                    Text(badge.subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(16)
+                .background(.ultraThickMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .shadow(radius: 12)
+                .transition(.scale(scale: 0.95).combined(with: .opacity))
             }
         }
     }
@@ -986,3 +1120,5 @@ final class NotificationManager {
         UNUserNotificationCenter.current().add(request)
     }
 }
+
+
